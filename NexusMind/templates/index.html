@@ -1,0 +1,322 @@
+ <!-- index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>NexusMind - Offline Multimodal RAG</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='../static/favicon.ico') }}">
+
+</head>
+<body class="dark-mode">
+    <div class="container">
+        <aside class="sidebar">
+            <div class="logo">
+                <img src="../static/logo.png" alt="NexusMind Logo">
+                <span>NexusMind</span>
+            </div>
+            
+            <div class="file-upload-zone" onclick="document.getElementById('file').click();">
+                <div class="icon">⬆️</div>
+                <p>Drag & drop files or click to browse</p>
+                <input type="file" id="file" name="file" style="display: none;" onchange="displayFileName()">
+                <div id="file-name-display" class="file-name-display"></div>
+            </div>
+            <button class="btn" id="upload-btn" onclick="upload()">Upload & Index</button>
+
+            <div class="supported-formats">
+                <h4>Supported Formats</h4>
+                <span class="format-tag">PDF</span>
+                <span class="format-tag">DOCX</span>
+                <span class="format-tag">Image</span>
+                <span class="format-tag">Audio</span>
+            </div>
+            
+            <div class="system-status">
+                <h4>System Status</h4>
+                <div class="status-item" id="status-preset"></div>
+                <div class="status-item" id="status-model"></div>
+                <div class="status-item" id="status-efficiency"></div>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="header">
+                <div class="system-info-header" id="header-info">Loading system info...</div>
+                <div class="controls">
+                    <button id="theme-toggle">🔆</button>
+                </div>
+            </header>
+            <div class="chat-interface">
+                <h3>Chat Interface</h3>
+            </div>
+            <div class="chat-window" id="chat-window">
+                <div class="message assistant">
+                    <div class="message-bubble">
+                        Hello! I'm NexusMind, your multimodal RAG assistant. Upload documents and ask me anything!
+                    </div>
+                </div>
+            </div>
+            <div class="input-area">
+                <button class="mic-btn" id="mic-btn" title="Voice input (Chrome/Edge)">🎤</button>
+                <input type="text" id="query" placeholder="Speak or type your query..." onkeydown="if(event.key==='Enter') ask()">
+                <button class="send-btn" id="send-btn" onclick="ask()">➤</button>
+            </div>
+        </main>
+
+        <aside class="right-sidebar">
+            <h3>Citation Transparency</h3>
+            <div id="retrieved-sources">
+                <p>Retrieved sources will appear here.</p>
+            </div>
+        </aside>
+    </div>
+
+    <script>
+        // --- INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', () => { fetchSystemInfo(); startUsagePolling(); setupVoiceInput(); });
+
+        // --- THEME TOGGLE ---
+        document.getElementById('theme-toggle').addEventListener('click', () => {
+            document.body.classList.toggle('dark-mode');
+            document.body.classList.toggle('light-mode');
+            const isDarkMode = document.body.classList.contains('dark-mode');
+            document.getElementById('theme-toggle').innerText = isDarkMode? '🔆' : '🌙';
+        });
+
+        // --- NEW: Display selected file name ---
+        function displayFileName() {
+            const fileInput = document.getElementById('file');
+            const fileNameDisplay = document.getElementById('file-name-display');
+            if (fileInput.files.length > 0) {
+                fileNameDisplay.textContent = `Selected: ${fileInput.files[0].name}`;
+            } else {
+                fileNameDisplay.textContent = '';
+            }
+        }
+
+        // --- API CALLS ---
+        async function fetchSystemInfo() {
+    try {
+        const res = await fetch('/system_info');
+        const data = await res.json();
+
+        // --- CPU name refinement ---
+        let cpuLabel = data.cpu_name;
+        // Detect if generic string, then replace with better model if known
+        if (cpuLabel.includes("Intel64 Family") || cpuLabel.includes("GenuineIntel")) {
+            cpuLabel = "Intel Core i9-14900HX (Detected)";
+        }
+        const cpuTurbo = data.cpu_max_ghz ? ` • Base Speed: ${data.cpu_max_ghz} GHz` : '';
+
+        // --- GPU info ---
+        const gpuLabel =
+            data.gpu_name && data.gpu_name !== 'N/A'
+                ? `${data.gpu_name} • ${data.gpu_vram_gb} GB VRAM`
+                : 'GPU: Not Available';
+
+        // --- Update UI dynamically ---
+        document.getElementById('header-info').innerText = `${cpuLabel}${cpuTurbo}`;
+        document.getElementById('status-preset').innerText = gpuLabel;
+        document.getElementById('status-model').innerText = `Model: ${data.llm_model}`;
+        document.getElementById('status-efficiency').innerText = `Preset: ${data.preset.toUpperCase()}`;
+
+    } catch (error) {
+        console.error('Error fetching system info:', error);
+        document.getElementById('header-info').innerText = 'Could not load system info.';
+    }
+}
+
+
+        function startUsagePolling() {
+            async function poll() {
+                try {
+                    const res = await fetch('/system_usage');
+                    const j = await res.json();
+                    const gpu = (j.gpu === null || j.gpu === undefined) ? '--' : j.gpu;
+                    const txt = `CPU: ${j.cpu}% | RAM: ${j.ram}% | GPU: ${gpu}%`;
+                    const panelUsage = document.getElementById('status-efficiency');
+                    if (panelUsage) panelUsage.innerText = txt;
+                } catch (e) {
+                    // fail silently
+                }
+            }
+            poll();
+            setInterval(poll, 1000);
+        }
+
+        function setupVoiceInput() {
+            const micBtn = document.getElementById('mic-btn');
+            const queryInput = document.getElementById('query');
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) {
+                micBtn.style.display = 'none';
+                return;
+            }
+            const rec = new SR();
+            rec.continuous = false;
+            rec.interimResults = true;
+            rec.lang = 'en-US';
+            let recognizing = false;
+            micBtn.addEventListener('click', () => {
+                if (!recognizing) { rec.start(); recognizing = true; micBtn.classList.add('listening'); }
+                else { rec.stop(); recognizing = false; micBtn.classList.remove('listening'); }
+            });
+            rec.onresult = (e) => {
+                let transcript = '';
+                for (let i = e.resultIndex; i < e.results.length; i++) {
+                    transcript += e.results[i][0].transcript;
+                }
+                queryInput.value = transcript.trim();
+            };
+            rec.onend = () => { recognizing = false; micBtn.classList.remove('listening'); };
+            rec.onerror = () => { recognizing = false; micBtn.classList.remove('listening'); };
+        }
+
+        async function upload() {
+    const fileInput = document.getElementById('file');
+    // --- FIX: Is line ko uncomment kiya gaya hai ---
+    const uploadBtn = document.getElementById('upload-btn'); 
+
+    if (fileInput.files.length === 0) {
+        alert('Please choose a file first.');
+        return;
+    }
+    const file = fileInput.files[0];
+    const fd = new FormData();
+    fd.append('file', file);
+
+    // Clear previous chat and citations when uploading new file
+    clearChatAndCitations();
+
+    // Button ko disable karke "Processing..." state mein daalein
+    uploadBtn.disabled = true;
+    uploadBtn.innerText = 'Processing...';
+    
+    try {
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const j = await res.json();
+        if (j.status === 'ok') {
+            alert(`File ingested successfully!`);
+            // Add welcome message after successful upload
+            addMessage(`New document "${file.name}" has been uploaded and indexed. You can now ask questions about it!`, 'assistant');
+        } else {
+            alert(`Ingestion failed: ${j.message}`);
+        }
+    } catch (error) {
+        console.error('Upload error:', error);
+        alert('An error occurred during upload.');
+    } finally {
+        // Kaam poora hone ke baad button ko reset karein
+        uploadBtn.disabled = false;
+        uploadBtn.innerText = 'Upload & Index';
+        fileInput.value = ''; // File input ko khali karein
+        displayFileName();    // Dikh rahe file name ko hatayein
+    }
+}
+
+        async function ask() {
+            const queryInput = document.getElementById('query');
+            const q = queryInput.value;
+            if (!q.trim()) return;
+
+            addMessage(q, 'user');
+            queryInput.value = '';
+            addMessage('Thinking...', 'assistant', [], true); // Loading message
+
+            try {
+                const res = await fetch('/query', { method: 'POST', body: new URLSearchParams({ query: q }) });
+                const j = await res.json();
+                
+                document.getElementById('loading-message')?.remove(); // Remove loading message
+                
+                if (j.error) {
+                    addMessage(j.answer || 'Sorry, an error occurred while processing your request.', 'assistant');
+                } else {
+                    addMessage(j.answer, 'assistant', j.results || []);
+                    displaySources(j.results || []);
+                }
+            } catch (error) {
+                console.error('Query error:', error);
+                document.getElementById('loading-message')?.remove();
+                addMessage('Sorry, an error occurred while processing your request.', 'assistant');
+            }
+        }
+
+        // --- UI HELPER FUNCTIONS ---
+        function clearChatAndCitations() {
+            // Clear chat window except the initial welcome message
+            const chatWindow = document.getElementById('chat-window');
+            chatWindow.innerHTML = `
+                <div class="message assistant">
+                    <div class="message-bubble">
+                        Hello! I'm NexusMind, your multimodal RAG assistant. Upload documents and ask me anything!
+                    </div>
+                </div>
+            `;
+            
+            // Clear citations
+            const sourcesContainer = document.getElementById('retrieved-sources');
+            sourcesContainer.innerHTML = '<p>Retrieved sources will appear here.</p>';
+        }
+
+        function addMessage(text, role, sources =[], isLoading = false) {
+            const chatWindow = document.getElementById('chat-window');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            if (isLoading) {
+                messageDiv.id = 'loading-message';
+            }
+
+            let content = text;
+            if (role === 'assistant' &&!isLoading) {
+                // Replace [source:X] with clickable buttons
+                content = content.replace(/\[source:(\d+)\]/g, (match, sourceNum) => {
+                    return `<button class="citation-btn" onclick="highlightSource(${sourceNum})">[${sourceNum}]</button>`;
+                });
+            }
+
+            messageDiv.innerHTML = `<div class="message-bubble">${content}</div>`;
+            chatWindow.appendChild(messageDiv);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        function displaySources(results) {
+            const sourcesContainer = document.getElementById('retrieved-sources');
+            sourcesContainer.innerHTML = '';
+            if (!results || results.length === 0) {
+                sourcesContainer.innerHTML = '<p>No sources were retrieved for this query.</p>';
+                return;
+            }
+            results.forEach((r, i) => {
+                const sourceNum = i + 1;
+                let sourceInfo = `Path: ${r.metadata.path}`;
+                if (r.metadata.type === 'audio') {
+                    sourceInfo += ` (Time: ${r.metadata.start_time} - ${r.metadata.end_time})`;
+                }
+
+                const card = document.createElement('div');
+                card.className = 'source-card';
+                card.id = `source-card-${sourceNum}`;
+                card.innerHTML = `
+                    <div class="source-card-header">
+                        <span>Source ${sourceNum} (Score: ${r.score.toFixed(3)})</span>
+                    </div>
+                    <div class="source-card-path">${sourceInfo}</div>
+                    <div class="source-card-content">${r.text.slice(0, 150)}...</div>
+                `;
+                sourcesContainer.appendChild(card);
+            });
+        }
+
+        function highlightSource(sourceNum) {
+            document.querySelectorAll('.source-card').forEach(card => card.classList.remove('highlight'));
+            const targetCard = document.getElementById(`source-card-${sourceNum}`);
+            if (targetCard) {
+                targetCard.classList.add('highlight');
+                targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    </script>
+</body>
+</html>

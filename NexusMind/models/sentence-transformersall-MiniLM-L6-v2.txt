@@ -1,0 +1,1 @@
+https://huggingface.co/leliuga/all-MiniLM-L6-v2-GGUF
