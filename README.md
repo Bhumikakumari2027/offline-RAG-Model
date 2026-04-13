@@ -183,7 +183,7 @@ It delivers **multimodal understanding**, **citation-based transparency**, and *
 
 ## 👨‍💻 Author
 
-**Abhishek Kumar Vishwakarma**
+**Bhumika Kumari**
 Department of Computer Science (AI & DS)
 Shri Ramswaroop Memorial University, Barabanki
 **Guide:** Rohit Sir
